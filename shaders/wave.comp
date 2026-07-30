@@ -1,0 +1,185 @@
+#version 450
+#extension GL_EXT_debug_printf : enable
+
+#define M_PI 3.1415926535897932384626433832795
+
+layout(binding = 0) uniform _UBO
+{
+    int window_width;
+    int window_height;
+    float source_freq;
+    float freq;
+    float c;
+    float dt;
+    int sw;
+    int pw;
+    int ds;
+    int wred;
+    int par;
+    int circ;
+} ubo;
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout (rgba32f, binding = 1) uniform image2D imgRead;
+layout (rgba32f, binding = 2) uniform image2D imgWrite;
+
+float sigma(vec2 pos, vec2 size, vec2 width)
+{
+    if (pos.y > size.y - width.y)
+    {
+        return pow((pos.y - size.y + width.y) / width.y, 2);    
+    } else if (pos.y < width.y)
+    {
+        return pow((width.y - pos.y) / width.y, 2);    
+    } else if (pos.x > size.x - width.x)
+    {
+        return pow((pos.x - size.x + width.x) / width.x, 2);
+    } else if (pos.x < width.x)
+    {
+        return pow((width.x - pos.x) / width.x, 2);    
+    }
+    return 0;
+}
+
+bool isInBorder(vec2 pos, vec2 size, vec2 width)
+{
+    return sigma(pos, size, width) != 0;
+}
+
+/*
+
+    Scene
+    {
+        Sources[]
+        {
+            ivec2 pos;
+            float radius;
+            float frequency;
+            bool one_pulse;
+        }
+
+        image2D walls
+        float c;
+    }
+
+*/
+
+void main() 
+{
+    vec2 uv = (gl_GlobalInvocationID.xy - 0.5f * vec2(ubo.window_width, ubo.window_height)) / vec2(ubo.window_width, ubo.window_height);
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 apparent_pixel = ivec2(uv * vec2(ubo.window_width, ubo.window_height)); 
+    ivec2 size = imageSize(imgRead);
+
+    if (pixel.x >= size.x || pixel.y >= size.y)
+        return;
+    
+    vec4 val = imageLoad(imgRead, pixel);
+
+    float time = val.b;
+    float dt = ubo.dt;
+
+    float pos = val.r;
+    float valL = imageLoad(imgRead, clamp(pixel + ivec2(-1, 0), ivec2(0), size - 1)).r;
+    float valR = imageLoad(imgRead, clamp(pixel + ivec2(1, 0),  ivec2(0), size - 1)).r;
+    float valU = imageLoad(imgRead, clamp(pixel + ivec2(0, -1), ivec2(0), size - 1)).r;
+    float valD = imageLoad(imgRead, clamp(pixel + ivec2(0, 1),  ivec2(0), size - 1)).r;
+    float valUL = imageLoad(imgRead, clamp(pixel + ivec2(-1, -1), ivec2(0), size - 1)).r;
+    float valUR = imageLoad(imgRead, clamp(pixel + ivec2(1, -1), ivec2(0), size - 1)).r;
+    float valDL = imageLoad(imgRead, clamp(pixel + ivec2(-1, 1), ivec2(0), size - 1)).r;
+    float valDR = imageLoad(imgRead, clamp(pixel + ivec2(1, 1), ivec2(0), size - 1)).r;
+    float lap = (4.0/6.0)* (valL + valR + valU + valD - 4.0 * pos) + (1.0/6.0)*(valUL + valUR + valDL + valDR - 4.0*pos);
+    
+
+    float c = ubo.c; //1.f / (sqrt(2)*dt);
+
+    float prevvel = val.g;
+
+    vec2 border_width = (size - vec2(ubo.window_width, ubo.window_height)) * 0.5f;
+    float afric = (50*c / min(border_width.x, border_width.y)) * sigma(pixel, size, border_width) * prevvel;
+
+    float a = lap *c*c - afric;
+    float vel = prevvel + a * dt;
+    float next = pos + vel * dt;
+
+    if (bool(ubo.sw))
+    {
+        float dist = distance(apparent_pixel, vec2(ubo.window_width * 0.5f + sin(ubo.source_freq * 2 * M_PI * time) * ubo.window_width * 0.3, 100)); //* 0.1 + (4.0/6.0)*c*time , 100));    
+        float radius = 4.f;        // source radius in pixels
+        float frequency = ubo.freq;   // Hz
+
+        if (dist < radius)
+        {
+            float envelope = min(1.0, time) * 1.5;
+            float falloff = exp(-dist*dist / (2*radius*radius)); // gaussian falloff
+            next = sin(frequency * 2 * M_PI * time) * falloff * envelope; // overwrite position
+            vel = cos(frequency * 2 * M_PI * time) * falloff * frequency * 2 * M_PI * envelope; // velocity = d(next)/dt
+        }
+    }
+    if (bool(ubo.pw))
+    {
+        float dist = abs(apparent_pixel.y);   
+        float frequency = ubo.freq;   // Hz
+
+        if (dist == 0)
+        {
+            float envelope = min(1.0, time) * 0.5;
+            next = sin(frequency * 2 * M_PI * time) * envelope; // overwrite position
+            vel = cos(frequency * 2 * M_PI * time) * frequency * 2 * M_PI * envelope; // velocity = d(next)/dt
+        }
+    }
+
+    float solid = float(isInBorder(pixel, size, border_width));
+
+    
+
+    if (bool(ubo.ds))
+    {
+        if (uv.y >= 0.25 && uv.y <= 0.26)
+        {
+            if (!(size.x * 0.5 - 110 < pixel.x && pixel.x < size.x * 0.5 - 90) && !(size.x * 0.5 + 90 < pixel.x && pixel.x < size.x * 0.5 + 110))
+            {
+                next = 0;
+                vel = 0;
+                solid = 1.f;
+            }
+        }
+    }
+
+    if (bool(ubo.circ))
+    {
+        if (distance(apparent_pixel, vec2(ubo.window_width * 0.5f, ubo.window_height * 0.75f)) < 250 && apparent_pixel.y < ubo.window_height * 0.75f
+            && distance(apparent_pixel, vec2(ubo.window_width * 0.5f, ubo.window_height * 0.5f)) > 150
+        )
+        {
+            next = 0;
+            vel = 0;
+            solid = 1.f;
+        }
+    }
+
+    if (bool(ubo.par))
+    {
+        float y = -0.0025 * pow((apparent_pixel.x - ubo.window_width * 0.5), 2) + ubo.window_height * 0.9;
+        if (y > apparent_pixel.y - 5 && y < apparent_pixel.y + 5 && apparent_pixel.y > ubo.window_height * 0.6)
+        {
+            next = 0;
+            vel = 0;
+            solid = 1.f;        
+        }
+    }
+
+    if(bool(ubo.wred))
+    {
+        if (-((apparent_pixel.x/3) % int(100)) == apparent_pixel.y - int(ubo.window_height * 0.5))
+        {
+            next = 0;
+            vel = 0;
+            solid = 1.f;        
+        }
+    }
+
+
+    imageStore(imgWrite, pixel, vec4(next, vel, time + dt, solid));
+}
