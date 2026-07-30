@@ -2,6 +2,8 @@
 
 A from-scratch C++/Vulkan rendering engine built as a personal showcase project. it's structured around a **layer/scene stack** so multiple independent scenes (UI demos, simulations, and eventually a raytracer) can live side by side and be swapped between at runtime.
 
+<img width="1420" height="800" alt="2026-07-31-001928_hyprshot" src="https://github.com/user-attachments/assets/4f986515-5b9e-4997-a216-2c4eec52250c" />
+<img width="1420" height="800" alt="2026-07-31-002007_hyprshot" src="https://github.com/user-attachments/assets/f833fb87-efa0-4110-896b-312faaf7c03b" />
 
 ### Why this exists
 
