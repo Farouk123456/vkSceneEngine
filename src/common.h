@@ -16,24 +16,17 @@
 #include <string>
 #include <queue>
 #include <tuple>
-//#include <atomic>
 #include <any>
-#include <mutex> // IWYU pragma: keep 
+#include <mutex>
 #include <random>
 #include <execution>
 #include <map>
 #include <set>
-#include <unordered_set> // IWYU pragma: keep 
+#include <unordered_set>
 #include <limits>
 #include <algorithm>
 #include <optional>
 #include <filesystem>
-#include <fstream> // IWYU pragma: keep
-#include <format> // IWYU pragma: keep
-
-//#include <chrono>
-//#include <thread>
-
 #include <memory>
 
 #include <ft2build.h>
@@ -117,7 +110,7 @@ namespace settings
     }
 
     const bool multisampling = true;
-    const bool validationLayer = false;
+    const bool validationLayer = true;
     const bool debugLayer = true;
     const unsigned int maxFramesInFlight = 3;
     const float antialiasing = 0.25f; // 25%
@@ -128,7 +121,7 @@ namespace settings
     const unsigned int atlas_imageWidth = 4096;
     const unsigned int atlas_imageHeight = 4096;
     const unsigned int atlas_texture_Padding = 8;
-    const int fontSizes[] = { 16, 20, 32, 48, 64, 128, -1 };
+    const int fontSizes[] = { 16, 24, 32, 48, 64, 128, -1 };
 };
 
 // Map a float value from one range to another
@@ -277,10 +270,10 @@ class VulkanHandler
             // so that compute is diffrent than graphics and present
             if (compute) vkGetDeviceQueue(device, computeFamily.value(), (queueIdx + 1) % queueCount, compute);
 
-            if (queueIdx + 1 < queueCount)
-                queueIdx++;
-            else
-                LOG_ERROR("No more Queue to give");
+            //if (queueIdx + 1 < queueCount)
+            //    queueIdx++;
+            //else
+            //    LOG_ERROR("No more Queue to give");
         }
 
         void destroy()
@@ -1375,7 +1368,10 @@ class GPUBuffer
 
     uint32_t BufsizeBytes           = -1;
     void *dataAcces                 = nullptr;
-    Window* win                     = nullptr;
+    
+    VkQueue queue = VK_NULL_HANDLE;
+    VulkanHandler * VKH = nullptr;
+
     VkCommandBuffer commandBuffer   = VK_NULL_HANDLE;
     VkCommandPool commandPool       = VK_NULL_HANDLE;
     VkBufferUsageFlagBits bufferUsage;
@@ -1383,9 +1379,9 @@ class GPUBuffer
 
 
     public:
-        void createBuffer(VkBufferUsageFlagBits bufferUsage, uint32_t initial_sizeBytes, Window* win, VkCommandPool commandPool, bool staging = true)
+        void createBuffer(VkBufferUsageFlagBits bufferUsage, uint32_t initial_sizeBytes, VkQueue queue, VulkanHandler * VKH, VkCommandPool commandPool, bool staging = true)
         {
-            this->BufsizeBytes = initial_sizeBytes; this->win = win; this->commandPool = commandPool; this->bufferUsage = bufferUsage; this->staging = staging;
+            this->BufsizeBytes = initial_sizeBytes; this->queue = queue; this->VKH = VKH; this->commandPool = commandPool; this->bufferUsage = bufferUsage; this->staging = staging;
 
             if (BufsizeBytes == 0)
                 return;
@@ -1404,7 +1400,7 @@ class GPUBuffer
                     allocInfo.requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
                     allocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
 
-                    vmaCreateBuffer(win->Vk->allocator, &bufferInfo, &allocInfo, &Staging_Buff, &Staging_allocation, nullptr);
+                    vmaCreateBuffer(VKH->allocator, &bufferInfo, &allocInfo, &Staging_Buff, &Staging_allocation, nullptr);
                 }
                 {
                     VkBufferCreateInfo bufferInfo = {};
@@ -1417,7 +1413,7 @@ class GPUBuffer
                     allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
                     allocInfo.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 
-                    vmaCreateBuffer(win->Vk->allocator, &bufferInfo, &allocInfo, &Buff, &allocation, nullptr);
+                    vmaCreateBuffer(VKH->allocator, &bufferInfo, &allocInfo, &Buff, &allocation, nullptr);
                 }
             } else
             {
@@ -1432,10 +1428,10 @@ class GPUBuffer
                 allocInfo.requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
                 allocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
 
-                vmaCreateBuffer(win->Vk->allocator, &bufferInfo, &allocInfo, &Staging_Buff, &Staging_allocation, nullptr);
+                vmaCreateBuffer(VKH->allocator, &bufferInfo, &allocInfo, &Staging_Buff, &Staging_allocation, nullptr);
             }
 
-            vmaMapMemory(win->Vk->allocator, Staging_allocation, &dataAcces);
+            vmaMapMemory(VKH->allocator, Staging_allocation, &dataAcces);
 
             VkCommandBufferAllocateInfo allocInfo{};
             allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -1443,7 +1439,7 @@ class GPUBuffer
             allocInfo.commandPool = commandPool;
             allocInfo.commandBufferCount = 1;
 
-            vkAllocateCommandBuffers(win->Vk->device, &allocInfo, &commandBuffer);
+            vkAllocateCommandBuffers(VKH->device, &allocInfo, &commandBuffer);
         }
 
         void destroyBuffer()
@@ -1451,13 +1447,13 @@ class GPUBuffer
             if (BufsizeBytes == 0)
                 return;
             
-            vmaUnmapMemory(win->Vk->allocator, Staging_allocation);
-            vkFreeCommandBuffers(win->Vk->device, commandPool, 1, &commandBuffer);
-            vmaDestroyBuffer(win->Vk->allocator, Staging_Buff, Staging_allocation);
+            vmaUnmapMemory(VKH->allocator, Staging_allocation);
+            vkFreeCommandBuffers(VKH->device, commandPool, 1, &commandBuffer);
+            vmaDestroyBuffer(VKH->allocator, Staging_Buff, Staging_allocation);
             
             if (staging)
             {
-                vmaDestroyBuffer(win->Vk->allocator, Buff, allocation);
+                vmaDestroyBuffer(VKH->allocator, Buff, allocation);
             }
         }
 
@@ -1467,10 +1463,10 @@ class GPUBuffer
                 return;
 
             if (waitQueue)
-                vkQueueWaitIdle(win->graphicsQueue);
+                vkQueueWaitIdle(queue);
 
             destroyBuffer();
-            createBuffer(bufferUsage, sizeBytes, win, commandPool, staging);
+            createBuffer(bufferUsage, sizeBytes, queue, VKH, commandPool, staging);
         }
 
         void writeToBuffer(void *BufferData, uint32_t sizeBytes, VkCommandBuffer cmdBfr = VK_NULL_HANDLE)
@@ -1553,8 +1549,8 @@ class GPUBuffer
                 submitInfo.commandBufferCount = 1;
                 submitInfo.pCommandBuffers = &commandBuffer;
 
-                vkQueueSubmit(win->graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
-                vkQueueWaitIdle(win->graphicsQueue);
+                vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
+                vkQueueWaitIdle(queue);
             }
             else
             {
@@ -1569,6 +1565,7 @@ class GPUBuffer
         
 };
 
+// Vk, graphicsqueue, commandPool
 
 class AssetManager
 {
@@ -1576,7 +1573,9 @@ class AssetManager
         std::unordered_map<std::string, Texture> assetMap = {};
         std::unordered_map<std::string, Font> FontMap     = {};
         std::vector<TextureAtlas> Bitmaps       = {};
-        Window * win                = nullptr;
+        VulkanHandler * Vk                = nullptr;
+        VkQueue graphicsQueue               = VK_NULL_HANDLE;
+        VkCommandPool commandPool   = VK_NULL_HANDLE;
         VkSampler textureSampler    = VK_NULL_HANDLE;
         VkSampler fontSampler       = VK_NULL_HANDLE;
         FT_Library lib              = nullptr;
@@ -1601,20 +1600,20 @@ class AssetManager
             VmaAllocationCreateInfo cI{};
             cI.requiredFlags = properties;
 
-            vmaCreateImage(win->Vk->allocator, &imageInfo, &cI, &image, &imageAllocation, nullptr);
+            vmaCreateImage(Vk->allocator, &imageInfo, &cI, &image, &imageAllocation, nullptr);
         }
 
         void generateMipmaps(VkImage image, VkFormat imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels, VkCommandBuffer commandBuffer = VK_NULL_HANDLE)
         {
             VkFormatProperties formatProperties;
-            vkGetPhysicalDeviceFormatProperties(win->Vk->physicalDevice, imageFormat, &formatProperties);
+            vkGetPhysicalDeviceFormatProperties(Vk->physicalDevice, imageFormat, &formatProperties);
 
             if (!(formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)) {
                 LOG_FATAL("texture image format does not support linear blitting!");
             }
 
             bool cmdBuf = commandBuffer == VK_NULL_HANDLE;
-            if (cmdBuf) commandBuffer = beginSingleTimeCommands(win->Vk->device, win->commandPool);
+            if (cmdBuf) commandBuffer = beginSingleTimeCommands(Vk->device, commandPool);
 
             VkImageMemoryBarrier barrier{};
             barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -1692,7 +1691,7 @@ class AssetManager
                 0, nullptr,
                 1, &barrier);
 
-            if (cmdBuf) endSingleTimeCommands(win->Vk->device, win->graphicsQueue, commandBuffer, win->commandPool);
+            if (cmdBuf) endSingleTimeCommands(Vk->device, graphicsQueue, commandBuffer, commandPool);
         }
 
         FT_Face createFontFace(std::string fontFilename, int& fontSize)
@@ -1889,9 +1888,9 @@ class AssetManager
             }
         }
     
-        void init(Window * w)
+        void init(VulkanHandler * Vk, VkQueue gqueue, VkCommandPool cmdPool)
         {
-            win = w;
+            this->Vk = Vk; this->graphicsQueue = gqueue; this->commandPool = cmdPool;
             // init freetype
             FT_Error error = FT_Init_FreeType( &lib );
 
@@ -1915,7 +1914,7 @@ class AssetManager
             samplerInfo.anisotropyEnable = anisotropic;
 
             VkPhysicalDeviceProperties properties{};
-            vkGetPhysicalDeviceProperties(win->Vk->physicalDevice, &properties);
+            vkGetPhysicalDeviceProperties(Vk->physicalDevice, &properties);
 
             samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
             samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
@@ -1927,7 +1926,7 @@ class AssetManager
             samplerInfo.minLod = 0.0f;
             samplerInfo.maxLod = VK_LOD_CLAMP_NONE;
             
-            if (vkCreateSampler(win->Vk->device, &samplerInfo, nullptr, &textureSampler) != VK_SUCCESS) {
+            if (vkCreateSampler(Vk->device, &samplerInfo, nullptr, &textureSampler) != VK_SUCCESS) {
                 LOG_FATAL("failed to create texture sampler!");
             }
         }
@@ -1966,7 +1965,7 @@ class AssetManager
                     samplerInfo.anisotropyEnable = VK_TRUE;
 
                     VkPhysicalDeviceProperties properties{};
-                    vkGetPhysicalDeviceProperties(win->Vk->physicalDevice, &properties);
+                    vkGetPhysicalDeviceProperties(Vk->physicalDevice, &properties);
 
                     samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
                     samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
@@ -1978,7 +1977,7 @@ class AssetManager
                     samplerInfo.minLod = 0.0f;
                     samplerInfo.maxLod = VK_LOD_CLAMP_NONE;
                     
-                    if (vkCreateSampler(win->Vk->device, &samplerInfo, nullptr, &fontSampler) != VK_SUCCESS)
+                    if (vkCreateSampler(Vk->device, &samplerInfo, nullptr, &fontSampler) != VK_SUCCESS)
                         LOG_FATAL("failed to create texture sampler!");
                 }
 
@@ -2019,14 +2018,14 @@ class AssetManager
             if (!pixels) LOG_FATAL("failed to load texture image!");
 
             GPUBuffer buffer;
-            buffer.createBuffer(VK_BUFFER_USAGE_TRANSFER_SRC_BIT, imageSize, win, win->commandPool, false);
+            buffer.createBuffer(VK_BUFFER_USAGE_TRANSFER_SRC_BIT, imageSize, graphicsQueue, Vk, commandPool, false);
             buffer.writeToBuffer(pixels, imageSize);
             stbi_image_free(pixels);
 
             createImage(mipLevels, texWidth, texHeight, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory);
 
-            transitionImageLayout(0, mipLevels, textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, win->Vk->device, win->graphicsQueue, win->commandPool);
-            copyBufferToImage(buffer.getHandle(), textureImage, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight), win->Vk->device, win->graphicsQueue, win->commandPool);
+            transitionImageLayout(0, mipLevels, textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, Vk->device, graphicsQueue, commandPool);
+            copyBufferToImage(buffer.getHandle(), textureImage, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight), Vk->device, graphicsQueue, commandPool);
             generateMipmaps(textureImage, VK_FORMAT_R8G8B8A8_SRGB, texWidth, texHeight, mipLevels);
 
             VkImageView vkImgView;
@@ -2041,7 +2040,7 @@ class AssetManager
             viewInfo.subresourceRange.baseArrayLayer = 0;
             viewInfo.subresourceRange.layerCount = 1;
 
-            if (vkCreateImageView(win->Vk->device, &viewInfo, nullptr, &vkImgView) != VK_SUCCESS) {
+            if (vkCreateImageView(Vk->device, &viewInfo, nullptr, &vkImgView) != VK_SUCCESS) {
                 LOG_FATAL("failed to create texture image view!");
             }
 
@@ -2065,13 +2064,13 @@ class AssetManager
             if (!pixels) LOG_FATAL("failed to load texture image!");
 
             GPUBuffer buff;
-            buff.createBuffer(VK_BUFFER_USAGE_TRANSFER_SRC_BIT, imageSize, win, win->commandPool, false);
+            buff.createBuffer(VK_BUFFER_USAGE_TRANSFER_SRC_BIT, imageSize, graphicsQueue, Vk, commandPool, false);
             buff.writeToBuffer(pixels, imageSize); 
 
             createImage(mipLevels, texWidth, texHeight, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory);
 
-            transitionImageLayout(0, mipLevels, textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, win->Vk->device, win->graphicsQueue, win->commandPool);
-            copyBufferToImage(buff.getHandle(), textureImage, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight), win->Vk->device, win->graphicsQueue, win->commandPool);
+            transitionImageLayout(0, mipLevels, textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, Vk->device, graphicsQueue, commandPool);
+            copyBufferToImage(buff.getHandle(), textureImage, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight), Vk->device, graphicsQueue, commandPool);
             generateMipmaps(textureImage, VK_FORMAT_R8G8B8A8_SRGB, texWidth, texHeight, mipLevels);
 
             VkImageView vkImgView;
@@ -2086,7 +2085,7 @@ class AssetManager
             viewInfo.subresourceRange.baseArrayLayer = 0;
             viewInfo.subresourceRange.layerCount = 1;
 
-            if (vkCreateImageView(win->Vk->device, &viewInfo, nullptr, &vkImgView) != VK_SUCCESS) {
+            if (vkCreateImageView(Vk->device, &viewInfo, nullptr, &vkImgView) != VK_SUCCESS) {
                 LOG_FATAL("failed to create texture image view!");
             }
 
@@ -2107,13 +2106,13 @@ class AssetManager
             if (bufferSizeBytes > 0)
             {
                 GPUBuffer buff;
-                buff.createBuffer(VK_BUFFER_USAGE_TRANSFER_SRC_BIT, bufferSizeBytes, win, win->commandPool, false);
+                buff.createBuffer(VK_BUFFER_USAGE_TRANSFER_SRC_BIT, bufferSizeBytes, graphicsQueue, Vk, commandPool, false);
                 buff.writeToBuffer(buffer, bufferSizeBytes); 
-                transitionImageLayout(0, 1, textureImage, format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, win->Vk->device, win->graphicsQueue, win->commandPool);          
-                copyBufferToImage(buff.getHandle(), textureImage, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight), win->Vk->device, win->graphicsQueue, win->commandPool);
+                transitionImageLayout(0, 1, textureImage, format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, Vk->device, graphicsQueue, commandPool);          
+                copyBufferToImage(buff.getHandle(), textureImage, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight), Vk->device, graphicsQueue, commandPool);
                 buff.destroyBuffer();
             
-                transitionImageLayout(0,1, textureImage, format, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL, win->Vk->device, win->graphicsQueue, win->commandPool);
+                transitionImageLayout(0,1, textureImage, format, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL, Vk->device, graphicsQueue, commandPool);
             }
 
             VkImageView vkImgView;
@@ -2132,7 +2131,7 @@ class AssetManager
             viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
             viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
 
-            if (vkCreateImageView(win->Vk->device, &viewInfo, nullptr, &vkImgView) != VK_SUCCESS) {
+            if (vkCreateImageView(Vk->device, &viewInfo, nullptr, &vkImgView) != VK_SUCCESS) {
                 LOG_FATAL("failed to create texture image view!");
             }
 
@@ -2141,8 +2140,8 @@ class AssetManager
 
         void destroyTexture(Texture& tex)
         {
-            vmaDestroyImage(win->Vk->allocator, tex.image, tex.ImageMemory);
-            vkDestroyImageView(win->Vk->device, tex.ImgView, nullptr);
+            vmaDestroyImage(Vk->allocator, tex.image, tex.ImageMemory);
+            vkDestroyImageView(Vk->device, tex.ImgView, nullptr);
         }
 
         GPUBuffer buff;
@@ -2152,12 +2151,12 @@ class AssetManager
         {
             VkDeviceSize imageSize = sizeBytes;
 
-            if (buf2.getHandle() == VK_NULL_HANDLE) buf2.createBuffer(VkBufferUsageFlagBits(VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT), imageSize, win, win->commandPool, false);
+            if (buf2.getHandle() == VK_NULL_HANDLE) buf2.createBuffer(VkBufferUsageFlagBits(VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT), imageSize, graphicsQueue, Vk, commandPool, false);
             else buf2.resizeBuffer(sizeBytes);
 
             bool cmdBuf = (commandBuffer == VK_NULL_HANDLE);
 
-            if (cmdBuf) commandBuffer = beginSingleTimeCommands(win->Vk->device, win->commandPool);
+            if (cmdBuf) commandBuffer = beginSingleTimeCommands(Vk->device, commandPool);
         
 
             transitionImageLayout(
@@ -2167,8 +2166,8 @@ class AssetManager
                 context.format,
                 VK_IMAGE_LAYOUT_GENERAL,
                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                win->Vk->device, win->graphicsQueue,
-                win->commandPool,
+                Vk->device, graphicsQueue,
+                commandPool,
                 commandBuffer
             );
         
@@ -2193,12 +2192,12 @@ class AssetManager
                 context.format,
                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 VK_IMAGE_LAYOUT_GENERAL,
-                win->Vk->device, win->graphicsQueue,
-                win->commandPool,
+                Vk->device, graphicsQueue,
+                commandPool,
                 commandBuffer
             );        
  
-            if (cmdBuf) endSingleTimeCommands(win->Vk->device, win->graphicsQueue, commandBuffer, win->commandPool);
+            if (cmdBuf) endSingleTimeCommands(Vk->device, graphicsQueue, commandBuffer, commandPool);
 
             return buf2;
         }
@@ -2207,7 +2206,7 @@ class AssetManager
         {
             bool cmdBuf = (commandBuffer == VK_NULL_HANDLE);
 
-            if (cmdBuf) commandBuffer = beginSingleTimeCommands(win->Vk->device, win->commandPool);
+            if (cmdBuf) commandBuffer = beginSingleTimeCommands(Vk->device, commandPool);
             VkBufferImageCopy copyRegion{};
             copyRegion.bufferOffset = 0;
             copyRegion.bufferRowLength = 0;
@@ -2226,8 +2225,8 @@ class AssetManager
                 context.format,
                 VK_IMAGE_LAYOUT_GENERAL,
                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                win->Vk->device, win->graphicsQueue,
-                win->commandPool,
+                Vk->device, graphicsQueue,
+                commandPool,
                 commandBuffer
             );        
 
@@ -2240,24 +2239,24 @@ class AssetManager
                 context.format,
                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 VK_IMAGE_LAYOUT_GENERAL,
-                win->Vk->device, win->graphicsQueue,
-                win->commandPool,
+                Vk->device, graphicsQueue,
+                commandPool,
                 commandBuffer
             );        
 
-            if (cmdBuf) endSingleTimeCommands(win->Vk->device, win->graphicsQueue, commandBuffer, win->commandPool);
+            if (cmdBuf) endSingleTimeCommands(Vk->device, graphicsQueue, commandBuffer, commandPool);
         }
 
         void updateTexture(Texture& context, void* buffer, uint32_t width, uint32_t height, uint32_t offsetX, uint32_t offsetY, VkCommandBuffer commandBuffer = VK_NULL_HANDLE)
         {
             VkDeviceSize imageSize = width * height * 4;
 
-            if (buff.getHandle() == VK_NULL_HANDLE) buff.createBuffer(VK_BUFFER_USAGE_TRANSFER_SRC_BIT, imageSize, win, win->commandPool, false);
+            if (buff.getHandle() == VK_NULL_HANDLE) buff.createBuffer(VK_BUFFER_USAGE_TRANSFER_SRC_BIT, imageSize, graphicsQueue, Vk, commandPool, false);
             buff.writeToBuffer(buffer, imageSize, commandBuffer);
 
             bool cmdBuf = (commandBuffer == VK_NULL_HANDLE);
 
-            if (cmdBuf) commandBuffer = beginSingleTimeCommands(win->Vk->device, win->commandPool);
+            if (cmdBuf) commandBuffer = beginSingleTimeCommands(Vk->device, commandPool);
 
             transitionImageLayout(
                 0,
@@ -2266,8 +2265,8 @@ class AssetManager
                 VK_FORMAT_R8G8B8A8_SRGB,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                win->Vk->device, win->graphicsQueue,
-                win->commandPool,
+                Vk->device, graphicsQueue,
+                commandPool,
                 commandBuffer
             );
         
@@ -2286,7 +2285,7 @@ class AssetManager
         
             generateMipmaps(context.image, VK_FORMAT_R8G8B8A8_SRGB, width, height, context.mipLevels, commandBuffer);
 
-            if (cmdBuf) endSingleTimeCommands(win->Vk->device, win->graphicsQueue, commandBuffer, win->commandPool);
+            if (cmdBuf) endSingleTimeCommands(Vk->device, graphicsQueue, commandBuffer, commandPool);
         }
         
         void loadGlyphsIndices(uint32_t * glyphs, int glyphCount, std::string font, VkCommandBuffer commandBuffer = VK_NULL_HANDLE)
@@ -2307,19 +2306,19 @@ class AssetManager
 
             for (auto& ac : assetMap)
             {
-                vmaDestroyImage(win->Vk->allocator, ac.second.image, ac.second.ImageMemory);
-                vkDestroyImageView(win->Vk->device, ac.second.ImgView, nullptr);
+                vmaDestroyImage(Vk->allocator, ac.second.image, ac.second.ImageMemory);
+                vkDestroyImageView(Vk->device, ac.second.ImgView, nullptr);
             }
 
             for (auto& atl : Bitmaps)
             {
                 delete[] atl.buffer;
-                vmaDestroyImage(win->Vk->allocator, atl.texture.image, atl.texture.ImageMemory);
-                vkDestroyImageView(win->Vk->device, atl.texture.ImgView, nullptr);
+                vmaDestroyImage(Vk->allocator, atl.texture.image, atl.texture.ImageMemory);
+                vkDestroyImageView(Vk->device, atl.texture.ImgView, nullptr);
             }
 
-            vkDestroySampler(win->Vk->device, textureSampler, nullptr);
-            vkDestroySampler(win->Vk->device, fontSampler, nullptr);
+            vkDestroySampler(Vk->device, textureSampler, nullptr);
+            vkDestroySampler(Vk->device, fontSampler, nullptr);
         }
 
         Texture& getAssetContext(std::string filename)
@@ -3117,20 +3116,9 @@ class TextDrawer
     GPUBuffer TransformBOs[settings::maxFramesInFlight];
     std::array<std::string,2> used_shaders;
 
-    struct transform
-    {
-        float r;
-        float g;
-        float b;
-        float a;
-        float x;
-        float y;
-    };
+    struct transform { float r,g,b,a,x,y; };
 
-    struct Uniform
-    {
-        glm::mat4 proj;
-    } uniform;
+    struct Uniform { glm::mat4 proj; } uniform;
 
     struct RAQMfontfallback { Font font; int start; int len; };
 
@@ -3220,11 +3208,15 @@ class TextDrawer
     static std::unordered_map<WrapKey, std::vector<TextLineData>, WrapKeyHash> wrapCache;
 
     raqm_direction_t detectParagraphDirection(const std::u32string& text);
+    
     std::vector<RAQMfontfallback> getFontFallbackRuns(std::u32string_view str, const Font& primary);
+    
     std::vector<float> measureTextWidthCumulative(const std::u32string& text, const Font& primary_font, int fontSize);
+    
     float measureTextWidth(const std::u32string& text, const Font& primary_font, int fontSize);
 
     void ensureGlyphsInAtlasFor(const std::u32string& text, const std::string& fontName, int fontSize, VkCommandBuffer cmd = VK_NULL_HANDLE);
+
     void recreatePipelineIfNeeded();
 
     void shapeAndEmit(const std::u32string& text, const Font& primary,
@@ -3604,9 +3596,9 @@ private:
 
             for (uint i = 0; i < settings::maxFramesInFlight; i++)
             {
-                VBOs[i].createBuffer(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, sizeof(v), win, win->commandPool);
-                IBOs[i].createBuffer(VK_BUFFER_USAGE_INDEX_BUFFER_BIT, sizeof(ind), win, win->commandPool);
-                UBOs[i].createBuffer(VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, sizeof(Uniform), win, win->commandPool);
+                VBOs[i].createBuffer(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, sizeof(v), win->graphicsQueue, win->Vk, win->commandPool);
+                IBOs[i].createBuffer(VK_BUFFER_USAGE_INDEX_BUFFER_BIT, sizeof(ind), win->graphicsQueue, win->Vk, win->commandPool);
+                UBOs[i].createBuffer(VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, sizeof(Uniform), win->graphicsQueue, win->Vk, win->commandPool);
 
                 VBOs[i].writeToBuffer(v, sizeof(v));
                 IBOs[i].writeToBuffer(ind, sizeof(ind));
@@ -3784,7 +3776,7 @@ public:
 
     void initStacks()
     {
-        res.assets.init(win);
+        res.assets.init(win->Vk, win->graphicsQueue, win->commandPool);
         res.assets.setupTextureSampler();
         res.assets.loadAssetDirectory("fonts");
         
@@ -3928,7 +3920,7 @@ class GLFWHandler
                 barriers[0].dstStageMask     = VK_PIPELINE_STAGE_2_COPY_BIT;
                 barriers[0].dstAccessMask    = VK_ACCESS_2_TRANSFER_READ_BIT;
                 barriers[0].oldLayout        = VK_IMAGE_LAYOUT_GENERAL;
-                barriers[0].newLayout        = VK_IMAGE_LAYOUT_GENERAL; // stays GENERAL
+                barriers[0].newLayout        = VK_IMAGE_LAYOUT_GENERAL;
                 barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                 barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                 barriers[0].image            = win->FB_images[win->currentFrameIndex];

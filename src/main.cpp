@@ -3,12 +3,19 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #define STB_RECT_PACK_IMPLEMENTATION
 #include "common.h"
+#include <format> 
 
-// queues
 // imagecount can change mid application
+// window too huge of a class shader class -> pipeline class
 // dangling pointer
 // LRU bounded cache for text caching
 // Same TextDrawer for entire application
+// Track last used buffers pipelines sets so we dont have to call vkCmdBind every frame for graphics and compute
+// Branch descriptorsets into new per layer stack object
+// add all draw needed data to DrawData struct
+// Layer remove win class dependency
+// give Buffers uuids or use buffer handle to differentiate between them
+
 
 class BasicDrawer
 {
@@ -65,9 +72,9 @@ public:
     
         for (uint i = 0; i < settings::maxFramesInFlight; i++)
         {
-            VBOs[i].createBuffer(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, sizeof(Vertex) * 128, win, win->commandPool);
-            IBOs[i].createBuffer(VK_BUFFER_USAGE_INDEX_BUFFER_BIT, sizeof(uint32_t) * 256, win, win->commandPool);
-            UBOs[i].createBuffer(VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, sizeof(Uniform), win, win->commandPool);
+            VBOs[i].createBuffer(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, sizeof(Vertex) * 128, win->graphicsQueue, win->Vk, win->commandPool);
+            IBOs[i].createBuffer(VK_BUFFER_USAGE_INDEX_BUFFER_BIT, sizeof(uint32_t) * 256, win->graphicsQueue, win->Vk, win->commandPool);
+            UBOs[i].createBuffer(VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, sizeof(Uniform), win->graphicsQueue, win->Vk, win->commandPool);
         }
 
         setUniform(0);
@@ -515,9 +522,9 @@ struct WaveSim : Layer
     
         for (uint i = 0; i < settings::maxFramesInFlight; i++)
         {
-            VBOs[i].createBuffer(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, sizeof(v), win, win->commandPool);
-            IBOs[i].createBuffer(VK_BUFFER_USAGE_INDEX_BUFFER_BIT, sizeof(ind), win, win->commandPool);
-            UBOs[i].createBuffer(VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, sizeof(uniform), win, win->commandPool);
+            VBOs[i].createBuffer(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, sizeof(v), win->graphicsQueue, win->Vk, win->commandPool);
+            IBOs[i].createBuffer(VK_BUFFER_USAGE_INDEX_BUFFER_BIT, sizeof(ind), win->graphicsQueue, win->Vk, win->commandPool);
+            UBOs[i].createBuffer(VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, sizeof(uniform), win->graphicsQueue, win->Vk, win->commandPool);
 
             VBOs[i].writeToBuffer(v, sizeof(v));
             IBOs[i].writeToBuffer(ind, sizeof(ind));
@@ -1042,6 +1049,63 @@ struct WaveSimController : Layer
     }
 };
 
+struct FluidSim : Layer
+{
+    float r;
+
+    void init(VulkanHandler* VKH, Window * w, LayerEventHandler * EH, WindowRescources * res) override
+    {
+        this->VKH = VKH; win = w; this->updateFrequency = updateFrequency;
+        r = 0;
+    }
+    
+    void destroy() override {}
+
+    void handle_event(LayerEvent ev) override {}
+
+    void onrecreate_swapchain() override {}
+
+    void setUpdateFrequency(int freq) override { updateFrequency = freq; }
+
+    void draw(uint32_t imageIndex, int currentFrameIndex) override
+    {
+        std::array<VkClearValue, 2> clearValues{};
+        clearValues[0].color = {{0.3, r, 0.05f, 1.0f}};
+        clearValues[1].depthStencil = {1.0f, 0};
+
+        VkViewport viewport{};
+        viewport.x = 0;
+        viewport.y = 0;
+        viewport.width = win->swapchainExtent.width;
+        viewport.height = win->swapchainExtent.height;
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+
+        VkRect2D scissor{};
+        scissor.offset = {0, 0};
+        scissor.extent = {win->swapchainExtent.width, win->swapchainExtent.height};
+
+        BeginRenderPass(win, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, clearValues, scissor, viewport);
+        vkCmdSetViewport(win->commandBuffers[currentFrameIndex], 0, 1, &viewport);
+        vkCmdSetScissor(win->commandBuffers[currentFrameIndex], 0, 1, &scissor);
+        EndRenderPass(win);
+    }
+
+    bool tab_state[2] = {true, true};
+
+    void update(LayerEventHandler * EH, float t, float dt) override
+    {
+        tab_state[1] = tab_state[0];
+        tab_state[0] = win->keyboardState[GLFW_KEY_TAB];
+
+        if (tab_state[0] && !tab_state[1])
+        {
+            EH->events.push(LayerEvent{SWITCH_TO_NEXT_STACK, this});
+        }
+    
+        r = (glm::sin(t) + 1) / 2;
+    }
+};
 
 struct Triangle
 {
@@ -1069,6 +1133,39 @@ struct SceneDescription
     std::vector<Triangle> triangles = {};
     std::vector<Mesh> meshes = {};
 };
+
+static SceneDescription getScene()
+{
+    SceneDescription sd;
+    
+    glm::vec3 p0 = glm::vec3(-1.f, -1.f, -1.f);
+    glm::vec3 p1 = glm::vec3(+1.f, -1.f, -1.f);
+    glm::vec3 p2 = glm::vec3(+1.f, -1.f, +1.f);
+    glm::vec3 p3 = glm::vec3(-1.f, -1.f, +1.f);
+    
+    glm::vec3 p4 = glm::vec3(-1.f, +1.f, -1.f);
+    glm::vec3 p5 = glm::vec3(+1.f, +1.f, -1.f);
+    glm::vec3 p6 = glm::vec3(+1.f, +1.f, +1.f);
+    glm::vec3 p7 = glm::vec3(-1.f, +1.f, +1.f);
+    
+    glm::vec3 p8 = p4 * 0.5f;
+    glm::vec3 p9 = p5 * 0.5f;
+    glm::vec3 p10 = p6 * 0.5f;
+    glm::vec3 p11 = p7 * 0.5f;
+
+    /* 
+        0,1,2, 2,3,0
+        4,5,6, 6,7,4
+        0,3,7, 7,4,9
+        1,2,6, 6,5,1
+        0,1,5, 5,4,0
+        2,3,7, 7,6,2
+    */
+
+    return sd;
+}
+
+static SceneDescription scene = getScene();
 
 struct TradRenderer : Layer
 {

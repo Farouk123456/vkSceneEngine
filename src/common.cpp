@@ -1,4 +1,5 @@
 #include "common.h"
+#include <fstream>
 
 _random RandomGenerator;
 

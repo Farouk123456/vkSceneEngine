@@ -52,11 +52,11 @@ void TextDrawer::init(Window * win, AssetManager * am, std::array<std::string,2>
 
     for (uint i = 0; i < settings::maxFramesInFlight; i++)
     {
-        VBOs[i].createBuffer(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, 8 * sizeof(float), win, win->commandPool);
-        IBOs[i].createBuffer(VK_BUFFER_USAGE_INDEX_BUFFER_BIT, 6 * sizeof(uint32_t), win, win->commandPool);
+        VBOs[i].createBuffer(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, 8 * sizeof(float), win->graphicsQueue, win->Vk, win->commandPool);
+        IBOs[i].createBuffer(VK_BUFFER_USAGE_INDEX_BUFFER_BIT, 6 * sizeof(uint32_t), win->graphicsQueue, win->Vk, win->commandPool);
         
-        InstVBOs[i].createBuffer(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, 1024*sizeof(TextLineData::Vertex), win, win->commandPool);
-        TransformBOs[i].createBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 1024*sizeof(transform), win, win->commandPool);
+        InstVBOs[i].createBuffer(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, 1024*sizeof(TextLineData::Vertex), win->graphicsQueue, win->Vk, win->commandPool);
+        TransformBOs[i].createBuffer(VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 1024*sizeof(transform), win->graphicsQueue, win->Vk, win->commandPool);
     
         VBOs[i].writeToBuffer(Mesh, 8 * sizeof(float));
         IBOs[i].writeToBuffer(MeshInd, 6 * sizeof(uint32_t));
