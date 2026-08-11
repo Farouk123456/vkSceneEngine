@@ -9,6 +9,7 @@ layout(location = 3) in int texIdx;
 layout(binding = 0) uniform _UBO
 {
     mat4 proj;
+    mat4 view;
     int window_width;
     int window_height;
     float t;
@@ -27,5 +28,5 @@ void main()
     fragUV = uv;
     fragTexIdx = texIdx;
     
-    gl_Position = ubo.proj * vec4(pos, 1.0);
+    gl_Position = ubo.proj * ubo.view * vec4(pos, 1.0);
 }

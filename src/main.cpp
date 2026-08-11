@@ -1,3 +1,4 @@
+#include <vulkan/vulkan_core.h>
 #define VMA_IMPLEMENTATION
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -16,6 +17,108 @@
 // Layer remove win class dependency
 // give Buffers uuids or use buffer handle to differentiate between them
 
+constexpr float CAMERA_MOVEMENT_SPEED = 3.f;
+constexpr float CAMERA_PAN_SPEED      = 2.f;
+constexpr float CAMERA_MOUSE_SENSITIVITY = 0.1f;
+
+struct Camera
+{
+    glm::vec3 position;
+    glm::vec3 target;
+    glm::vec3 up;
+
+    float yaw = 90;
+    float pitch = 0;
+
+    bool firstMouseSample = true;
+    double lastMouseX = 0.0;
+    double lastMouseY = 0.0;
+
+    void init(glm::vec3 position, glm::vec3 target, glm::vec3 up)
+    {
+        this->position = position; this->target = target; this->up = up;
+    
+        glm::vec3 dir = glm::normalize(target - position);
+        pitch = glm::degrees(glm::asin(glm::clamp(dir.y, -1.f, 1.f)));
+        yaw   = glm::degrees(glm::atan(dir.z, dir.x));
+    }
+
+    void updateCamera(Window * win, float frametime)
+    {
+        if (glfwGetInputMode(win->winHandle, GLFW_CURSOR) == GLFW_CURSOR_DISABLED)
+        {
+            glm::vec3 prevPos = position;
+            float prevYaw = yaw;
+            float prevPitch = pitch;
+
+            glm::vec3 moveInput = {
+                (float)(win->keyboardState[GLFW_KEY_A] - win->keyboardState[GLFW_KEY_D]),
+                (float)(win->keyboardState[GLFW_KEY_LEFT_CONTROL] - win->keyboardState[GLFW_KEY_SPACE]),
+                (float)(win->keyboardState[GLFW_KEY_W] - win->keyboardState[GLFW_KEY_S])
+            };
+
+            glm::vec2 lookInput = {
+                (float)(win->keyboardState[GLFW_KEY_RIGHT] - win->keyboardState[GLFW_KEY_LEFT]),
+                (float)(win->keyboardState[GLFW_KEY_DOWN] - win->keyboardState[GLFW_KEY_UP])
+            };
+
+            const glm::vec3 worldUp = up;
+
+            glm::vec3 forward;
+            forward.x = glm::cos(glm::radians(yaw)) * glm::cos(glm::radians(pitch));
+            forward.y = glm::sin(glm::radians(pitch));
+            forward.z = glm::sin(glm::radians(yaw)) * glm::cos(glm::radians(pitch));
+            forward = glm::normalize(forward);
+
+            glm::vec3 fwFlat(glm::cos(glm::radians(yaw)), 0, glm::sin(glm::radians(yaw)));
+            glm::vec3 right = glm::normalize(glm::cross(fwFlat, worldUp));
+
+            // --- movement: combine all axes, normalize so diagonals aren't faster ---
+            glm::vec3 moveDir = right * moveInput.x + worldUp * moveInput.y + fwFlat * moveInput.z;
+            if (glm::length(moveDir) > 1e-5f)
+                moveDir = glm::normalize(moveDir);
+
+            float moveScale = 30.f * frametime * CAMERA_MOVEMENT_SPEED;
+            position += moveDir * moveScale;
+
+            // --- look: mouse (when cursor disabled) falls back to arrow keys otherwise ---
+            double dX = 0.0, dY = 0.0;
+
+            if (firstMouseSample)
+            {
+                lastMouseX = win->mouseState.x;
+                lastMouseY = win->mouseState.y;
+                firstMouseSample = false;
+            }
+
+            dX = (win->mouseState.x - lastMouseX) * CAMERA_MOUSE_SENSITIVITY;
+            dY = (win->mouseState.y - lastMouseY) * CAMERA_MOUSE_SENSITIVITY;
+
+            lastMouseX = win->mouseState.x;
+            lastMouseY = win->mouseState.y;
+
+            if (dX == 0.0 && dY == 0.0)
+            {
+                float panScale = 30.f * frametime * CAMERA_PAN_SPEED;
+                dX = lookInput.x * panScale;
+                dY = lookInput.y * panScale;
+            }
+
+            yaw -= (float)dX;
+            pitch += (float)dY;
+
+            pitch = glm::clamp(pitch, -89.f, 89.f);
+            yaw = glm::mod(yaw, 360.f);
+        
+            target = position + forward;
+        }
+    }
+
+    glm::mat4 getView()
+    {
+        return glm::lookAt(position, target, up);
+    }
+};
 
 class BasicDrawer
 {
@@ -42,6 +145,7 @@ public:
     struct Uniform
     {
         glm::mat4 proj;
+        glm::mat4 view;
         int window_width;
         int window_height;
         float t;
@@ -89,7 +193,7 @@ public:
 
     void setUniform(float t = -1)
     {
-        u = Uniform{ glm::ortho(0.f, (float)win->currWinW, 0.f, (float)win->currWinH), win->currWinW, win->currWinH, u.t};
+        u = Uniform{ glm::ortho(0.f, (float)win->currWinW, 0.f, (float)win->currWinH), glm::mat4(1), win->currWinW, win->currWinH, u.t};
         if (t >= 0) u.t = t;
     }
 
@@ -1112,7 +1216,7 @@ struct Triangle
     glm::vec3 a = {0,0,0};
     glm::vec3 b = {0,0,0};
     glm::vec3 c = {0,0,0};
-    glm::vec3 color = {1,1,1};
+    glm::vec3 color = {1,1,1}; // also light col if luminance > 0
     glm::vec2 uva = {-1, -1};
     glm::vec2 uvb = {-1, -1};
     glm::vec2 uvc = {-1, -1};
@@ -1134,33 +1238,126 @@ struct SceneDescription
     std::vector<Mesh> meshes = {};
 };
 
+static void addBox(SceneDescription& sd, glm::vec3 center, glm::vec3 halfExtents, float rotationYDeg, glm::vec3 color)
+{
+    float rad = glm::radians(rotationYDeg);
+    float cs = glm::cos(rad);
+    float sn = glm::sin(rad);
+
+    auto rotate = [&](glm::vec3 local) -> glm::vec3
+    {
+        glm::vec3 r;
+        r.x = local.x * cs - local.z * sn;
+        r.y = local.y;
+        r.z = local.x * sn + local.z * cs;
+        return center + r;
+    };
+
+    glm::vec3 c000 = rotate({-halfExtents.x, -halfExtents.y, -halfExtents.z});
+    glm::vec3 c100 = rotate({+halfExtents.x, -halfExtents.y, -halfExtents.z});
+    glm::vec3 c110 = rotate({+halfExtents.x, +halfExtents.y, -halfExtents.z});
+    glm::vec3 c010 = rotate({-halfExtents.x, +halfExtents.y, -halfExtents.z});
+    glm::vec3 c001 = rotate({-halfExtents.x, -halfExtents.y, +halfExtents.z});
+    glm::vec3 c101 = rotate({+halfExtents.x, -halfExtents.y, +halfExtents.z});
+    glm::vec3 c111 = rotate({+halfExtents.x, +halfExtents.y, +halfExtents.z});
+    glm::vec3 c011 = rotate({-halfExtents.x, +halfExtents.y, +halfExtents.z});
+
+    int start = (int)sd.triangles.size();
+
+    // Winding below is authored for a scene where visual "up" is -Y
+    // (see getScene() for why) — faces point outward under that convention.
+    // +X
+    sd.triangles.emplace_back(c100, c111, c110, color);
+    sd.triangles.emplace_back(c111, c100, c101, color);
+    // -X
+    sd.triangles.emplace_back(c000, c011, c001, color);
+    sd.triangles.emplace_back(c011, c000, c010, color);
+    // top (local +Y, halfExtents.y direction)
+    sd.triangles.emplace_back(c010, c111, c011, color);
+    sd.triangles.emplace_back(c111, c010, c110, color);
+    // bottom (local -Y)
+    sd.triangles.emplace_back(c000, c101, c100, color);
+    sd.triangles.emplace_back(c101, c000, c001, color);
+    // +Z
+    sd.triangles.emplace_back(c001, c111, c101, color);
+    sd.triangles.emplace_back(c111, c001, c011, color);
+    // -Z
+    sd.triangles.emplace_back(c000, c110, c010, color);
+    sd.triangles.emplace_back(c110, c000, c100, color);
+
+    glm::vec3 mn = glm::min(glm::min(glm::min(c000, c100), glm::min(c110, c010)),
+                             glm::min(glm::min(c001, c101), glm::min(c111, c011)));
+    glm::vec3 mx = glm::max(glm::max(glm::max(c000, c100), glm::max(c110, c010)),
+                             glm::max(glm::max(c001, c101), glm::max(c111, c011)));
+
+    sd.meshes.emplace_back(start, (int)sd.triangles.size() - start, -1, mn, mx);
+}
+
 static SceneDescription getScene()
 {
     SceneDescription sd;
-    
-    glm::vec3 p0 = glm::vec3(-1.f, -1.f, -1.f);
-    glm::vec3 p1 = glm::vec3(+1.f, -1.f, -1.f);
-    glm::vec3 p2 = glm::vec3(+1.f, -1.f, +1.f);
-    glm::vec3 p3 = glm::vec3(-1.f, -1.f, +1.f);
-    
-    glm::vec3 p4 = glm::vec3(-1.f, +1.f, -1.f);
-    glm::vec3 p5 = glm::vec3(+1.f, +1.f, -1.f);
-    glm::vec3 p6 = glm::vec3(+1.f, +1.f, +1.f);
-    glm::vec3 p7 = glm::vec3(-1.f, +1.f, +1.f);
-    
-    glm::vec3 p8 = p4 * 0.5f;
-    glm::vec3 p9 = p5 * 0.5f;
-    glm::vec3 p10 = p6 * 0.5f;
-    glm::vec3 p11 = p7 * 0.5f;
 
-    /* 
-        0,1,2, 2,3,0
-        4,5,6, 6,7,4
-        0,3,7, 7,4,9
-        1,2,6, 6,5,1
-        0,1,5, 5,4,0
-        2,3,7, 7,6,2
-    */
+    float scale = 100;
+
+    // Authored directly for Vulkan's Y-down clip space: visual "up" is -Y here,
+    // so the floor sits at +scale and the ceiling at -scale (swapped vs. a
+    // Y-up scene), with winding corrected face-by-face to match.
+    glm::vec3 p0 = glm::vec3(-1.f, +1.f, -1.f) * scale; // floor
+    glm::vec3 p1 = glm::vec3(+1.f, +1.f, -1.f) * scale;
+    glm::vec3 p2 = glm::vec3(+1.f, +1.f, +1.f) * scale;
+    glm::vec3 p3 = glm::vec3(-1.f, +1.f, +1.f) * scale;
+    glm::vec3 p4 = glm::vec3(-1.f, -1.f, -1.f) * scale; // ceiling
+    glm::vec3 p5 = glm::vec3(+1.f, -1.f, -1.f) * scale;
+    glm::vec3 p6 = glm::vec3(+1.f, -1.f, +1.f) * scale;
+    glm::vec3 p7 = glm::vec3(-1.f, -1.f, +1.f) * scale;
+
+    glm::vec3 leftWallColor  = glm::vec3(.611, .0555, .062);
+    glm::vec3 rightWallColor = glm::vec3(.117, .4125, .115);
+    glm::vec3 white          = glm::vec3(.7295, .7355, .729);
+
+    // floor
+    sd.triangles.emplace_back(p0, p2, p1, white);
+    sd.triangles.emplace_back(p2, p0, p3, white);
+    // ceiling
+    sd.triangles.emplace_back(p4, p6, p5, white);
+    sd.triangles.emplace_back(p6, p4, p7, white);
+    // left wall (red)
+    sd.triangles.emplace_back(p0, p7, p3, leftWallColor);
+    sd.triangles.emplace_back(p7, p0, p4, leftWallColor);
+    // right wall (green)
+    sd.triangles.emplace_back(p1, p6, p2, rightWallColor);
+    sd.triangles.emplace_back(p6, p1, p5, rightWallColor);
+    // front wall intentionally omitted — open side the camera looks through
+    // back wall
+    sd.triangles.emplace_back(p2, p7, p3, white);
+    sd.triangles.emplace_back(p7, p2, p6, white);
+
+    sd.meshes.emplace_back(0, (int)sd.triangles.size(), -1, glm::vec3(-1) * scale, glm::vec3(1) * scale);
+
+    // --- ceiling light --- (sits just below the ceiling plane at y = -scale)
+    float lightHalfX = scale * 0.25f;
+    float lightHalfZ = scale * 0.25f;
+    float lightY = -scale + 0.5f; // offset toward room center to avoid z-fighting
+    glm::vec3 lightColor = glm::vec3(1.f, 0.92f, 0.75f);
+    float lightLuminance = 15.f;
+
+    glm::vec3 l0 = {-lightHalfX, lightY, -lightHalfZ};
+    glm::vec3 l1 = {+lightHalfX, lightY, -lightHalfZ};
+    glm::vec3 l2 = {+lightHalfX, lightY, +lightHalfZ};
+    glm::vec3 l3 = {-lightHalfX, lightY, +lightHalfZ};
+
+    int lightStart = (int)sd.triangles.size();
+    sd.triangles.emplace_back(l0, l2, l1, lightColor, glm::vec2(-1), glm::vec2(-1), glm::vec2(-1), lightLuminance);
+    sd.triangles.emplace_back(l2, l0, l3, lightColor, glm::vec2(-1), glm::vec2(-1), glm::vec2(-1), lightLuminance);
+    sd.meshes.emplace_back(lightStart, (int)sd.triangles.size() - lightStart, -1,
+                            glm::vec3(-lightHalfX, lightY - 1.f, -lightHalfZ),
+                            glm::vec3(+lightHalfX, lightY + 1.f, +lightHalfZ));
+
+    // --- short box (front-right) --- sits on the floor (y = +scale), extends toward the ceiling (-Y)
+    addBox(sd, glm::vec3(30.f, scale - 35.f, -20.f), glm::vec3(35.f, 35.f, 35.f), -18.f, white);
+
+    // --- tall box (back-left) ---
+    addBox(sd, glm::vec3(-30.f, scale - 65.f, 25.f), glm::vec3(35.f, 65.f, 35.f), 18.f, white);
 
     return sd;
 }
@@ -1169,15 +1366,77 @@ static SceneDescription scene = getScene();
 
 struct TradRenderer : Layer
 {
-    float r;
+    Shader shader;
+    GPUBuffer VBOs[settings::maxFramesInFlight];
+    GPUBuffer UBOs[settings::maxFramesInFlight];
+    GPUBuffer IBOs[settings::maxFramesInFlight];
+    
+    struct Vertex
+    {
+        float x;
+        float y;
+        float z;
+        glm::vec4 col;
+        glm::vec2 uv;
+        int tex_idx;
+    };
+
+    struct Uniform
+    {
+        glm::mat4 proj;
+        glm::mat4 view;
+        int window_width;
+        int window_height;
+        float t;
+    } u;
+
+    std::vector<Vertex> vertices  = {};
+    std::vector<uint32_t> indices = {};
+
+    Camera cam;
 
     void init(VulkanHandler* VKH, Window * w, LayerEventHandler * EH, WindowRescources * res) override
     {
         this->VKH = VKH; win = w; this->updateFrequency = updateFrequency;
-        r = 0;
+
+        shader.init(VKH, win);
+
+        shader.pushInputLayoutBinding(VertexInputBindingelement{VK_FORMAT_R32G32B32_SFLOAT, 1, sizeof(float)*3});
+        shader.pushInputLayoutBinding(VertexInputBindingelement{VK_FORMAT_R32G32B32A32_SFLOAT, 1, sizeof(float)*4});
+        shader.pushInputLayoutBinding(VertexInputBindingelement{VK_FORMAT_R32G32_SFLOAT, 1, sizeof(float)*2});
+        shader.pushInputLayoutBinding(VertexInputBindingelement{VK_FORMAT_R32_SINT, 1, sizeof(int)});
+        shader.setupInputLayout();
+
+        shader.pushUnfiormLayoutBinding(UniformLayoutBindingelement{1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT});
+        shader.pushUnfiormLayoutBinding(UniformLayoutBindingelement{1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT});
+        shader.pushUnfiormLayoutBinding(UniformLayoutBindingelement{1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT});
+        shader.setupUnfiormLayout();
+
+        shader.createGraphicsPipeline("shaders/basic_vert.spv", "shaders/basic_frag.spv");
+    
+        for (uint i = 0; i < settings::maxFramesInFlight; i++)
+        {
+            VBOs[i].createBuffer(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, sizeof(Vertex) * 128, win->graphicsQueue, win->Vk, win->commandPool);
+            IBOs[i].createBuffer(VK_BUFFER_USAGE_INDEX_BUFFER_BIT, sizeof(uint32_t) * 256, win->graphicsQueue, win->Vk, win->commandPool);
+            UBOs[i].createBuffer(VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, sizeof(Uniform), win->graphicsQueue, win->Vk, win->commandPool);
+        }
+
+        cam.init(glm::vec3(-78, -34, -284), glm::vec3(0,0,0), glm::vec3(0,1,0));
+        u = Uniform{glm::perspective(45.f, (float)win->currWinW / (float)win->currWinH, 0.1f, 1000.f), cam.getView(), win->currWinW, win->currWinH, 1.f};
+        shader.updateUniformUBOs(UBOs, sizeof(Uniform), settings::maxFramesInFlight);
     }
     
-    void destroy() override {}
+    void destroy() override
+    {
+        for (uint i = 0; i < settings::maxFramesInFlight; i++)
+        {
+            VBOs[i].destroyBuffer();
+            IBOs[i].destroyBuffer();
+            UBOs[i].destroyBuffer();
+        }
+
+        shader.destroy();
+    }
 
     void handle_event(LayerEvent ev) override {}
 
@@ -1187,8 +1446,48 @@ struct TradRenderer : Layer
 
     void draw(uint32_t imageIndex, int currentFrameIndex) override
     {
+        // add vertices
+        int k = 0;
+        for (Mesh& mesh : scene.meshes)
+        {
+            for (int i = 0; i < mesh.numTriangles; i++)
+            {
+                Triangle& t = scene.triangles[mesh.startTriangles + i];
+                vertices.emplace_back(t.a.x, t.a.y, t.a.z, glm::vec4(t.color, 1.f), t.uva, -2);
+                vertices.emplace_back(t.b.x, t.b.y, t.b.z, glm::vec4(t.color, 1.f), t.uvb, -2);
+                vertices.emplace_back(t.c.x, t.c.y, t.c.z, glm::vec4(t.color, 1.f), t.uvc, -2);
+            
+                indices.emplace_back(0 + 3*k);
+                indices.emplace_back(1 + 3*k);
+                indices.emplace_back(2 + 3*k);
+                k++;
+            }
+        }
+
+        // writeGPU
+        VBOs[currentFrameIndex].writeToBuffer(vertices.data(), sizeof(Vertex) * vertices.size(), win->commandBuffers[currentFrameIndex]);
+        IBOs[currentFrameIndex].writeToBuffer(indices.data(), sizeof(uint32_t) * indices.size(), win->commandBuffers[currentFrameIndex]);
+        UBOs[currentFrameIndex].writeToBuffer(&u, sizeof(Uniform), win->commandBuffers[currentFrameIndex]);
+
+        VkDescriptorImageInfo imageInfo{};
+        imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        imageInfo.imageView = win->FB_ImgViews[win->currentFrameIndex];
+        imageInfo.sampler = win->FB_sampler;
+
+        VkWriteDescriptorSet ds;
+        ds.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        ds.descriptorCount = 1;
+        ds.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        ds.pImageInfo = &imageInfo;
+        ds.dstSet = shader.getDescriptorSets()[win->currentFrameIndex];
+        ds.dstArrayElement = 0;
+        ds.pNext = nullptr;
+        ds.dstBinding = 1;
+
+        shader.updateUniform(ds);
+
         std::array<VkClearValue, 2> clearValues{};
-        clearValues[0].color = {{0.3, r, 0.05f, 1.0f}};
+        clearValues[0].color = {{0.05, 0.05, 0.05f, 1.0f}};
         clearValues[1].depthStencil = {1.0f, 0};
 
         VkViewport viewport{};
@@ -1206,22 +1505,49 @@ struct TradRenderer : Layer
         BeginRenderPass(win, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE, clearValues, scissor, viewport);
         vkCmdSetViewport(win->commandBuffers[currentFrameIndex], 0, 1, &viewport);
         vkCmdSetScissor(win->commandBuffers[currentFrameIndex], 0, 1, &scissor);
+
+        VkBuffer vbo[] = {VBOs[currentFrameIndex].getHandle()};
+        VkDeviceSize offsets[] = {0};
+
+        vkCmdBindIndexBuffer(win->commandBuffers[currentFrameIndex], IBOs[currentFrameIndex].getHandle(), 0, VK_INDEX_TYPE_UINT32);
+        vkCmdBindVertexBuffers(win->commandBuffers[currentFrameIndex], 0, 1, vbo, offsets);
+        vkCmdBindPipeline(win->commandBuffers[currentFrameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS, shader.getPipeline());
+        vkCmdBindDescriptorSets(win->commandBuffers[currentFrameIndex], VK_PIPELINE_BIND_POINT_GRAPHICS, shader.getPipelineLayout(), 0, 1, &shader.getDescriptorSets()[currentFrameIndex], 0, nullptr);
+        vkCmdDrawIndexed(win->commandBuffers[currentFrameIndex], indices.size(), 1, 0, 0, 0);
+
         EndRenderPass(win);
+
+        vertices.clear();
+        indices.clear(); 
     }
 
     bool tab_state[2] = {true, true};
+    bool enter_state[2] = {true, true};
 
     void update(LayerEventHandler * EH, float t, float dt) override
     {
+        cam.updateCamera(win, dt);
+        u = Uniform{glm::perspective(45.f, (float)win->currWinW / (float)win->currWinH, 0.1f, 1000.f), cam.getView(), win->currWinW, win->currWinH, 1.f};
+
+        enter_state[1] = enter_state[0];
+        enter_state[0] = win->keyboardState[GLFW_KEY_ENTER];
+
+        if (enter_state[0] && !enter_state[1])
+        {
+            if (glfwGetInputMode(win->winHandle, GLFW_CURSOR) == GLFW_CURSOR_DISABLED)
+                glfwSetInputMode(win->winHandle, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+            else
+                glfwSetInputMode(win->winHandle, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        }
+
         tab_state[1] = tab_state[0];
         tab_state[0] = win->keyboardState[GLFW_KEY_TAB];
 
         if (tab_state[0] && !tab_state[1])
         {
+            glfwSetInputMode(win->winHandle, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
             EH->events.push(LayerEvent{SWITCH_TO_NEXT_STACK, this});
         }
-    
-        r = (glm::sin(t) + 1) / 2;
     }
 };
 
