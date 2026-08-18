@@ -1,4 +1,3 @@
-#include <vulkan/vulkan_core.h>
 #define VMA_IMPLEMENTATION
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -8,7 +7,7 @@
 
 // imagecount can change mid application
 // window too huge of a class shader class -> pipeline class
-// dangling pointer
+// dangling pointer window 
 // LRU bounded cache for text caching
 // Same TextDrawer for entire application
 // Track last used buffers pipelines sets so we dont have to call vkCmdBind every frame for graphics and compute
@@ -16,6 +15,7 @@
 // add all draw needed data to DrawData struct
 // Layer remove win class dependency
 // give Buffers uuids or use buffer handle to differentiate between them
+// change input system to events to layers insteadof accessing Window
 
 constexpr float CAMERA_MOVEMENT_SPEED = 3.f;
 constexpr float CAMERA_PAN_SPEED      = 2.f;
@@ -1362,8 +1362,6 @@ static SceneDescription getScene()
     return sd;
 }
 
-static SceneDescription scene = getScene();
-
 struct TradRenderer : Layer
 {
     Shader shader;
@@ -1393,7 +1391,8 @@ struct TradRenderer : Layer
     std::vector<Vertex> vertices  = {};
     std::vector<uint32_t> indices = {};
 
-    Camera cam;
+    SceneDescription * scene    = VK_NULL_HANDLE;
+    Camera * cam                = nullptr; 
 
     void init(VulkanHandler* VKH, Window * w, LayerEventHandler * EH, WindowRescources * res) override
     {
@@ -1421,8 +1420,7 @@ struct TradRenderer : Layer
             UBOs[i].createBuffer(VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, sizeof(Uniform), win->graphicsQueue, win->Vk, win->commandPool);
         }
 
-        cam.init(glm::vec3(-78, -34, -284), glm::vec3(0,0,0), glm::vec3(0,1,0));
-        u = Uniform{glm::perspective(45.f, (float)win->currWinW / (float)win->currWinH, 0.1f, 1000.f), cam.getView(), win->currWinW, win->currWinH, 1.f};
+        u = Uniform{glm::perspective(45.f, (float)win->currWinW / (float)win->currWinH, 0.1f, 1000.f), cam->getView(), win->currWinW, win->currWinH, 1.f};
         shader.updateUniformUBOs(UBOs, sizeof(Uniform), settings::maxFramesInFlight);
     }
     
@@ -1438,6 +1436,12 @@ struct TradRenderer : Layer
         shader.destroy();
     }
 
+    void setContext(SceneDescription * scene, Camera * cam)
+    {
+        this->scene = scene;
+        this->cam = cam;
+    }
+
     void handle_event(LayerEvent ev) override {}
 
     void onrecreate_swapchain() override {}
@@ -1448,11 +1452,11 @@ struct TradRenderer : Layer
     {
         // add vertices
         int k = 0;
-        for (Mesh& mesh : scene.meshes)
+        for (Mesh& mesh : scene->meshes)
         {
             for (int i = 0; i < mesh.numTriangles; i++)
             {
-                Triangle& t = scene.triangles[mesh.startTriangles + i];
+                Triangle& t = scene->triangles[mesh.startTriangles + i];
                 vertices.emplace_back(t.a.x, t.a.y, t.a.z, glm::vec4(t.color, 1.f), t.uva, -2);
                 vertices.emplace_back(t.b.x, t.b.y, t.b.z, glm::vec4(t.color, 1.f), t.uvb, -2);
                 vertices.emplace_back(t.c.x, t.c.y, t.c.z, glm::vec4(t.color, 1.f), t.uvc, -2);
@@ -1526,8 +1530,8 @@ struct TradRenderer : Layer
 
     void update(LayerEventHandler * EH, float t, float dt) override
     {
-        cam.updateCamera(win, dt);
-        u = Uniform{glm::perspective(45.f, (float)win->currWinW / (float)win->currWinH, 0.1f, 1000.f), cam.getView(), win->currWinW, win->currWinH, 1.f};
+        cam->updateCamera(win, dt);
+        u = Uniform{glm::perspective(45.f, (float)win->currWinW / (float)win->currWinH, 0.1f, 1000.f), cam->getView(), win->currWinW, win->currWinH, 1.f};
 
         enter_state[1] = enter_state[0];
         enter_state[0] = win->keyboardState[GLFW_KEY_ENTER];
@@ -1564,11 +1568,19 @@ int main()
     auto unit = WH.getNewWindowUnit(VKH);
     unit->first->create(settings::width, settings::height, "Solver", false, &VKH, 0, "imgs/vulkan-icon.png", true, -1, -1);
 
+    SceneDescription scene = getScene();
+
+    Camera cam;
+    cam.init(glm::vec3(-78, -34, -284), glm::vec3(0,0,0), glm::vec3(0,1,0));
+        
+    TradRenderer * trad = new TradRenderer();
+    trad->setContext(&scene, &cam);
+
     LayerStack stack[2];
-    stack[0].addLayer(new TradRenderer());
+    stack[0].addLayer(trad);
     stack[1].addLayer(new WaveSim());
     stack[1].addLayer(new WaveSimController());
-    
+
     unit->second.addStack(stack[0]);
     unit->second.addStack(stack[1]);
 

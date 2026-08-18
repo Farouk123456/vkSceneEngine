@@ -1944,6 +1944,20 @@ class AssetManager
                 }
             }
         }
+
+        void loadAssetDirectoryRecursive(std::string directory)
+        {
+            for (const auto & entry : std::filesystem::recursive_directory_iterator(directory))
+            {
+                std::string file = entry.path();
+                int indexDot = file.find_last_of('.');
+                if (indexDot > 0 && indexDot < file.size())
+                {
+                    if (file.substr(indexDot) == ".png" || file.substr(indexDot) == ".ttf")
+                        loadAssetFile(entry.path());
+                }
+            }
+        }
    
         int loadAssetFile(std::string filePath)
         {
@@ -3779,6 +3793,7 @@ public:
         res.assets.init(win->Vk, win->graphicsQueue, win->commandPool);
         res.assets.setupTextureSampler();
         res.assets.loadAssetDirectory("fonts");
+        res.assets.loadAssetDirectoryRecursive("imgs");
         
         for (auto& stack : stacks)
         {
